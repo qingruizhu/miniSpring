@@ -21,9 +21,10 @@ public class DemoController {
     public void sayHello(
             HttpServletRequest req,
             HttpServletResponse resp,
-            @ZqrRequestParameter String word
+            @ZqrRequestParameter("name") String name,
+            @ZqrRequestParameter("age") String age
     ){
-        String s = demoService.sayHello(word);
+        String s = demoService.sayHello("age:"+age+",name:"+name);
         try {
             resp.getWriter().write(s);
         } catch (IOException e) {

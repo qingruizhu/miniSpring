@@ -12,6 +12,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class ZqrDispatchServlet extends HttpServlet {
 
@@ -32,29 +34,76 @@ public class ZqrDispatchServlet extends HttpServlet {
     }
 
     private void doDispatch(HttpServletRequest req, HttpServletResponse resp) throws Exception {
-        String url = req.getRequestURI();
-
-        String contextPath = req.getContextPath();
-        url = url.replace(contextPath,"").replaceAll("/+","/");
-        if (!this.handlerMapping.containsKey(url)){
+        //找到对应的handler
+        ZqrHandler zqrHandler = getZqrHandler(req);
+        if (null == zqrHandler) {
             resp.getWriter().write("404 NOT Found!!!");
             return;
         }
-        Method method = (Method) this.handlerMapping.get(url);
-        Map<String ,String[]> params = req.getParameterMap();
-        String simpleName = method.getDeclaringClass().getSimpleName();
-        String lowerName = toLowerFirstCase(simpleName);
-        method.invoke(this.ioc.get(lowerName),
-                new Object[]{req,resp,params.get("name")[0]});
+        Map<String, Integer> paramIndexMapping = zqrHandler.paramIndexMapping;
+        // 1.通过相对url找到method
+        Method method = zqrHandler.getMethod();
+        // 2.动态获取url参数
+        // 找方法的形参列表
+        Class<?>[] parameterTypes = method.getParameterTypes();
+        //创建通过反射调用方法的参数列表，并赋值
+        Object[] paramValues = new Object[parameterTypes.length];
 
+        Map<String,String[]> params = req.getParameterMap();
+        for (Map.Entry<String,String[]> entry:params.entrySet()) {
+            String[] values = entry.getValue();
+            String value = Arrays.toString(values).replaceAll("\\[|\\]", "").replaceAll("\\s", ",");
+            if (paramIndexMapping.containsKey(entry.getKey())){
+                //参数索引设置
+                Integer index = paramIndexMapping.get(entry.getKey());
+                paramValues[index] = convert(parameterTypes[index],value);
+            }
+        }
+        // 3.设置request和response参数
+        if (paramIndexMapping.containsKey(HttpServletRequest.class.getName())){
+            Integer index = paramIndexMapping.get(HttpServletRequest.class.getName());
+            paramValues[index] = req;
+        }
+        if (paramIndexMapping.containsKey(HttpServletResponse.class.getName())){
+            Integer index = paramIndexMapping.get(HttpServletResponse.class.getName());
+            paramValues[index] = resp;
+        }
+
+        //反射执行
+        method.invoke(zqrHandler.getController(),paramValues);
     }
+    private Object convert(Class<?> type,String value){
+        if(Integer.class == type){
+         return Integer.valueOf(value);
+        }
+        return value;
+    }
+    /**
+     * 获取Handler
+     * @param req
+     * @return
+     */
+    private ZqrHandler getZqrHandler(HttpServletRequest req) {
+        if (null == handlerMapping) return null;
+        String url = req.getRequestURI();
+        String contextPath = req.getContextPath();
+        url = url.replace(contextPath,"").replaceAll("/+","/");
+        for (ZqrHandler zqrHandler: handlerMapping) {
+            Pattern pattern = zqrHandler.getPattern();
+            Matcher matcher = pattern.matcher(url);
+            if (!matcher.matches()) continue;
+            return zqrHandler;
 
+        }
+        return null;
+    }
 
 
     Map<String,Object> ioc = new HashMap<String,Object>();
     Properties configContext = new Properties();
     List<String> classNames = new ArrayList<String>();
-    Map<String,Method> handlerMapping = new HashMap<String,Method>();
+//    Map<String,Method> handlerMapping = new HashMap<String,Method>();
+    List<ZqrHandler> handlerMapping = new ArrayList<ZqrHandler>();
 
     @Override
     public void init(ServletConfig config) throws ServletException {
@@ -94,7 +143,9 @@ public class ZqrDispatchServlet extends HttpServlet {
                     if (!method.isAnnotationPresent(ZqrRequestMapping.class)) continue;;
                     ZqrRequestMapping parameterAnnotation = method.getAnnotation(ZqrRequestMapping.class);
                     String url = "/"+baseUrl+"/"+parameterAnnotation.value().replaceAll("/+","/");
-                    handlerMapping.put(url,method);
+                    Pattern pattern = Pattern.compile(url);
+                    ZqrHandler zqrHandler = new ZqrHandler(value,pattern,method);
+                    handlerMapping.add(zqrHandler);
                     System.out.println("Mapped "+url+","+method);
                 }
             }
